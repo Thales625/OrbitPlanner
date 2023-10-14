@@ -1,9 +1,17 @@
 from PySimpleGUI import PySimpleGUI as sg
 import pygame as pg
-from threading import Thread
+from itertools import combinations
 from math import ceil
 
 from Vector import Vector2, Vector3
+
+"""
+TODO
+-Use combinations to calculate bodies trajectories
+Ex: [Earth, Moon, Mars, Saturn] = [(Earth, Moon), (Earth, Mars), (Earth, Saturn), (Moon, Mars), (Moon, Saturn), (Mars, Saturn)]
+-Trajectory
+Create a class in other file
+"""
 
 G = 6.674080324960551e-11
 
@@ -11,24 +19,40 @@ def vec3_ignore_z(VEC3):
     return Vector2(VEC3.x, VEC3.y)
 
 class Body:
-    def __init__(self, name, pos, mass, radius) -> None:
+    def __init__(self, name, r0, v0, mass, radius) -> None:
         self.name = name
-        self.pos = pos
+        self.r0 = r0
+        self.v0 = v0
+        self.r = [self.r0]
+        self.v = [self.v0]
         self.mass = mass
         self.radius = radius
         self.GM = G * self.mass
 
 def get_body_by_name(body_name):
     for body in bodies:
-        if body.name == body_name:
+        if body.name.lower() == body_name.lower():
             return body
     return False
 
-def rk4(pos):
+def rk4_body(p, body):
+    accel = Vector3(0, 0, 0)
+
+    for other_body in bodies:
+        if other_body is not body:
+            delta_pos = other_body.r[-1] - p
+            dist = delta_pos.magnitude()
+            direction = delta_pos / dist
+
+            accel += (other_body.GM/(dist**2)) * direction
+
+    return accel
+
+def rk4_vessel(p):
     accel = Vector3()
 
     for body in bodies:
-        delta_pos = body.pos - pos
+        delta_pos = body.r[0] - p
         dist = delta_pos.magnitude()
         direction = delta_pos / dist
 
@@ -36,29 +60,56 @@ def rk4(pos):
 
     return accel
 
-def calc(r0, v0, total_time):
+def calc_bodies():
+    steps = ceil(body_sim_time / body_step_size)
+
+    for body in bodies:
+        body.r = [body.r0]
+        body.v = [body.v0]
+
+    for step in range(steps):
+        for body in bodies:
+            k1v = rk4_body(body.r[-1], body)
+            k1r = body.v[-1]
+
+            k2v = rk4_body(body.r[-1]+k1r*body_step_size*.5, body)
+            k2r = body.v[-1]+k1v*body_step_size*.5
+
+            k3v = rk4_body(body.r[-1]+k2r*body_step_size*.5, body)
+            k3r = body.v[-1]+k2v*body_step_size*.5
+
+            k4v = rk4_body(body.r[-1]+k3r*body_step_size, body)
+            k4r = body.v[-1]+k3v*body_step_size
+
+            dv = (body_step_size/6)*(k1v + 2*k2v + 2*k3v + k4v)
+            dr = (body_step_size/6)*(k1r + 2*k2r + 2*k3r + k4r)
+
+            body.v.append(body.v[-1] + dv)
+            body.r.append(body.r[-1] + dr)
+
+def calc_vessel(r0, v0, total_time):
     r = [r0]
     v = [v0]
 
-    steps = ceil(total_time / step_size)
+    steps = ceil(total_time / vessel_step_size)
 
     for step in range(steps):
-        print(f"SIM: {(step/steps * 100):.0f}%")
+        #print(f"SIM: {(step/steps * 100):.0f}%")
 
-        k1v = rk4(r[-1])
+        k1v = rk4_vessel(r[-1])
         k1r = v[-1]
 
-        k2v = rk4(r[-1]+k1r*step_size*.5)
-        k2r = v[-1]+k1v*step_size*.5
+        k2v = rk4_vessel(r[-1]+k1r*vessel_step_size*.5)
+        k2r = v[-1]+k1v*vessel_step_size*.5
 
-        k3v = rk4(r[-1]+k2r*step_size*.5)
-        k3r = v[-1]+k2v*step_size*.5
+        k3v = rk4_vessel(r[-1]+k2r*vessel_step_size*.5)
+        k3r = v[-1]+k2v*vessel_step_size*.5
 
-        k4v = rk4(r[-1]+k3r*step_size)
-        k4r = v[-1]+k3v*step_size
+        k4v = rk4_vessel(r[-1]+k3r*vessel_step_size)
+        k4r = v[-1]+k3v*vessel_step_size
 
-        dv = (step_size/6)*(k1v + 2*k2v + 2*k3v + k4v)
-        dr = (step_size/6)*(k1r + 2*k2r + 2*k3r + k4r)
+        dv = (vessel_step_size/6)*(k1v + 2*k2v + 2*k3v + k4v)
+        dr = (vessel_step_size/6)*(k1r + 2*k2r + 2*k3r + k4r)
 
         v.append(v[-1] + dv)
         r.append(r[-1] + dr)
@@ -67,31 +118,36 @@ def calc(r0, v0, total_time):
 
 def update_screen():
     screen.blit(surface_enviroment, (0, 0))
-    screen.blit(surface_manuever, (0, 0))
+    screen.blit(surface_maneuver, (0, 0))
     pg.display.update()
 
-def render_manuever():
-    surface_manuever.fill((0, 0, 0, 0))
+def render_maneuver():
+    if len(r) == 0: return
+    surface_maneuver.fill((0, 0, 0, 0))
 
-    for i in range(len(manuever_r)-1): # manuever trajectory
-        a = manuever_r[i]
-        b = manuever_r[i+1]
-        pg.draw.line(surface_manuever, (0, 255, 0), camera_pos + vec3_ignore_z(a)*scale, camera_pos + vec3_ignore_z(b)*scale)
-    pg.draw.circle(surface_manuever, (100, 100, 100), camera_pos + vec3_ignore_z(r[manuever_index])*scale, 5)
+    for i in range(len(maneuver_r)-1): # maneuver trajectory
+        a = maneuver_r[i]
+        b = maneuver_r[i+1]
+        pg.draw.line(surface_maneuver, (0, 255, 0), camera_pos + vec3_ignore_z(a)*scale, camera_pos + vec3_ignore_z(b)*scale)
+    pg.draw.circle(surface_maneuver, (100, 100, 100), camera_pos + vec3_ignore_z(r[maneuver_index])*scale, 5)
         
 def render_enviroment():
     surface_enviroment.fill("#3C3846")
 
     for body in bodies: # draw bodies
-        pg.draw.circle(surface_enviroment, (0, 0, 100), camera_pos + vec3_ignore_z(body.pos)*scale, body.radius*scale)
+        for i in range(len(body.r)-1): # draw body main trajectory
+            a = vec3_ignore_z(body.r[i])
+            b = vec3_ignore_z(body.r[i+1])
+            pg.draw.line(surface_enviroment, (255, 0, 255), camera_pos + a*scale, camera_pos + b*scale)
+        pg.draw.circle(surface_enviroment, (0, 0, 100), camera_pos + vec3_ignore_z(body.r[maneuver_index])*scale, body.radius*scale)
 
-    for i in range(len(r)-1): # draw main trajectory
+    for i in range(len(r)-1): # draw vessel main trajectory
         a = r[i]
         b = r[i+1]
         pg.draw.line(surface_enviroment, (255, 0, 0), camera_pos + vec3_ignore_z(a)*scale, camera_pos + vec3_ignore_z(b)*scale)
 
 def mouse_down_handler(pos):
-    global manuever_index
+    global maneuver_index
 
     # set index on click
     if len(r) == 0: return
@@ -104,57 +160,51 @@ def mouse_down_handler(pos):
             min_dist = dist
             min_index = i
     update_man_index(min_index)
-    render_manuever()
+    render_maneuver()
     update_screen()
 
 def key_down_handler(key):
     global scale, camera_pos
 
     if key == pg.K_KP_PLUS or key == pg.K_PLUS:
-        scale += delta_scale
+        scale *= 1 + delta_scale
         render_enviroment()
+        render_maneuver()
         update_screen()
         return
     if key == pg.K_KP_MINUS or key == pg.K_MINUS:
-        scale -= delta_scale
+        scale *= 1 - delta_scale
         render_enviroment()
+        render_maneuver()
         update_screen()
         return
     if key == pg.K_UP:
         camera_pos.y += camera_speed
         render_enviroment()
+        render_maneuver()
         update_screen()
         return
     if key == pg.K_DOWN:
         camera_pos.y -= camera_speed
         render_enviroment()
+        render_maneuver()
         update_screen()
         return
     if key == pg.K_RIGHT:
         camera_pos.x -= camera_speed
         render_enviroment()
+        render_maneuver()
         update_screen()
         return
     if key == pg.K_LEFT:
         camera_pos.x += camera_speed
         render_enviroment()
-        update_screen()
-        return
-    
-    if key == pg.K_KP_ENTER or key == 13:
-        print("MANUEVER RUNNING...")
-        global manuever_r, manuever_v
-
-        tg = manuever_vel.x
-        m_vel = v[manuever_index].normalize() * tg
-
-        manuever_r, manuever_v = calc(r[manuever_index], v[manuever_index] + m_vel, manuever_time)
-        render_manuever()
+        render_maneuver()
         update_screen()
         return
 
 def controller_event_handler(event, values):
-    global step_size, total_time, manuever_time
+    global vessel_step_size, vessel_sim_time, maneuver_sim_time
 
     steps = values.copy()
 
@@ -166,116 +216,133 @@ def controller_event_handler(event, values):
 
     # SIMULATION
     if event == "add_sim-step-size":
-        step_size += steps["step_sim-step-size"]
-        window_controller["display_sim-step-size"].update(step_size)
+        vessel_step_size += steps["step_sim-step-size"]
+        window_controller["display_sim-step-size"].update(vessel_step_size)
         return
     if event == "sub_sim-step-size":
-        step_size -= steps["step_sim-step-size"]
-        window_controller["display_sim-step-size"].update(step_size)
+        vessel_step_size -= steps["step_sim-step-size"]
+        window_controller["display_sim-step-size"].update(vessel_step_size)
         return
     if event == "add_sim-time":
-        total_time += steps["step_sim-time"]
-        window_controller["display_sim-time"].update(total_time)
+        vessel_sim_time += steps["step_sim-time"]
+        window_controller["display_sim-time"].update(vessel_sim_time)
         return
     if event == "sub_sim-time":
-        total_time -= steps["step_sim-time"]
-        window_controller["display_sim-time"].update(total_time)
+        vessel_sim_time -= steps["step_sim-time"]
+        window_controller["display_sim-time"].update(vessel_sim_time)
         return
     if event == "btn_sim-exec":
         global r, v
-        r, v = calc(p0, v0, total_time)
+        r, v = calc_vessel(r0, v0, vessel_sim_time)
         render_enviroment()
         update_screen()
         return
     
-    # MANUEVER
+    # BODY
+    if event == "btn_body-sim-exec":
+        calc_bodies()
+        render_enviroment()
+        update_screen()
+        return
+
+    # maneuver
     if event == "add_man-time":
-        manuever_time += steps["step_man-time"]
-        window_controller["display_man-time"].update(manuever_time)
+        maneuver_sim_time += steps["step_man-time"]
+        window_controller["display_man-time"].update(maneuver_sim_time)
         return
     if event == "sub_man-time":
-        manuever_time -= steps["step_man-time"]
-        window_controller["display_man-time"].update(manuever_time)
+        maneuver_sim_time -= steps["step_man-time"]
+        window_controller["display_man-time"].update(maneuver_sim_time)
         return
     if event == "add_man-index":
-        update_man_index(manuever_index + steps["step_man-index"])
+        update_man_index(maneuver_index + steps["step_man-index"])
         return
     if event == "sub_man-index":
-        update_man_index(manuever_index - steps["step_man-index"])
+        update_man_index(maneuver_index - steps["step_man-index"])
         return
     
     # VEL
     if event == "add_man-vel-tg":
-        manuever_vel.x += steps["step_man-vel-tg"]
-        window_controller["display_man-vel-tg"].update(manuever_vel.x)
+        maneuver_vel.x += steps["step_man-vel-tg"]
+        window_controller["display_man-vel-tg"].update(maneuver_vel.x)
         return
     if event == "add_man-vel-norm":
-        manuever_vel.y += steps["step_man-vel-norm"]
-        window_controller["display_man-vel-norm"].update(manuever_vel.y)
+        maneuver_vel.y += steps["step_man-vel-norm"]
+        window_controller["display_man-vel-norm"].update(maneuver_vel.y)
         return
     if event == "add_man-vel-rad":
-        manuever_vel.z += steps["step_man-vel-rad"]
-        window_controller["display_man-vel-rad"].update(manuever_vel.z)
+        maneuver_vel.z += steps["step_man-vel-rad"]
+        window_controller["display_man-vel-rad"].update(maneuver_vel.z)
         return
     
     if event == "sub_man-vel-tg":
-        manuever_vel.x -= steps["step_man-vel-tg"]
-        window_controller["display_man-vel-tg"].update(manuever_vel.x)
+        maneuver_vel.x -= steps["step_man-vel-tg"]
+        window_controller["display_man-vel-tg"].update(maneuver_vel.x)
         return
     if event == "sub_man-vel-norm":
-        manuever_vel.y -= steps["step_man-vel-norm"]
-        window_controller["display_man-vel-norm"].update(manuever_vel.y)
+        maneuver_vel.y -= steps["step_man-vel-norm"]
+        window_controller["display_man-vel-norm"].update(maneuver_vel.y)
         return
     if event == "sub_man-vel-rad":
-        manuever_vel.z -= steps["step_man-vel-rad"]
-        window_controller["display_man-vel-rad"].update(manuever_vel.z)
+        maneuver_vel.z -= steps["step_man-vel-rad"]
+        window_controller["display_man-vel-rad"].update(maneuver_vel.z)
         return
     
-    # NODE CREATION
-    if event == "add_man-node":
-        manuever_nodes.append([sg.Text("NODE")])
-        window_controller["dynamic_column-node"].update([manuever_nodes])
-        #window_controller.extend_layout(window_controller["dynamic_column-node"], [[sg.Text("NODE")]])
-        #print(len(manuever_nodes))
-        return
-    
-    # MANUEVER EXEC
-    if event == "btn_man-exec":
-        global manuever_v, manuever_r
-        man_vel = v[manuever_index].normalize() * manuever_vel.x
-        manuever_r, manuever_v = calc(r[manuever_index], v[manuever_index] + man_vel, manuever_time)
-        render_manuever()
+    # maneuver EXEC
+    if event == "btn_man-sim-exec":
+        global maneuver_v, maneuver_r
+        print("maneuver RUNNING...")
+
+        tg = maneuver_vel.x
+        m_vel = v[maneuver_index].normalize() * tg
+
+        maneuver_r, maneuver_v = calc_vessel(r[maneuver_index], v[maneuver_index] + m_vel, maneuver_sim_time)
+        
+        render_maneuver()
         update_screen()
+        return
 
 def update_man_index(index):
-    global manuever_index
-    if index < 0 or index >= len(r) or index == manuever_index: return
-    manuever_index = index
+    global maneuver_index
+    if index < 0 or index >= len(r) or index == maneuver_index: return
+    maneuver_index = index
     window_controller["display_man-index"].update(index)
-    render_manuever()
+    render_maneuver()
+    render_enviroment()
     update_screen()
 
 bodies = []
-with open("bodies.txt", "r") as file: # load bodies
+with open("bodies_earth_ref.txt", "r") as file: # load bodies
     for line in file.readlines()[1:]:
-        name, pos, mass, radius = line.replace("\n", "").split("|")
+        name, pos, vel, mass, radius = line.replace("\n", "").split("|")
         pos = Vector3(eval(pos))
-        pos.z = 0 # remove height
+        vel = Vector3(eval(vel))
+        pos.z = 0 # ignore height
+        vel.z = 0 # ignore height
         mass = float(mass)
-        radius = int(radius)
-        bodies.append(Body(name, pos, mass, radius))
+        radius = float(radius)
+        bodies.append(Body(name, pos, vel, mass, radius))
 earth = get_body_by_name("Earth")
+moon = get_body_by_name("Moon")
+
+bodies = [earth, moon]
 
 # RK4
-step_size = 50
-total_time = 10000
-manuever_time = 10000
+vessel_step_size = 50
+body_step_size = 1000
 
-# trajectory
+vessel_sim_time = 5000
+maneuver_sim_time = 5000
+body_sim_time = 5000000
+
+# trajectory - vessel
 r = []
 v = []
-p0 = earth.pos - Vector3(0, earth.radius+400000)
+r0 = earth.r[0] - Vector3(0, earth.radius+400000)
 v0 = Vector3(7660, 0, 0)
+
+# bodies orbit propagation
+# bodies_comb = combinations(bodies, 2)
 
 # PG
 screen_size = Vector2(800, 800)      
@@ -283,45 +350,44 @@ screen = pg.display.set_mode(screen_size)
 pg.display.set_caption("Orbit")
 
 surface_enviroment = pg.Surface(screen_size)
-surface_manuever = pg.Surface(screen_size, pg.SRCALPHA)
+surface_maneuver = pg.Surface(screen_size, pg.SRCALPHA)
 
-camera_pos = screen_size * 0.5  
-camera_speed = 10
-
-delta_scale = 9e-7
+delta_scale = 1e-1
 scale = 15e-6
 
-manuever_index = 0
-manuever_scale = 10
-manuever_vel = Vector3(0, 0, 0) # tg | norm | radial
-manuever_r = []
-manuever_v = []
-manuever_nodes = []
+camera_pos = screen_size * 0.5
+camera_speed = 100
+
+maneuver_index = 0
+maneuver_scale = 10
+maneuver_vel = Vector3(0, 0, 0) # tg | norm | radial
+maneuver_r = []
+maneuver_v = []
 
 # SG
-font_size = lambda size: ("DS-Digital", size)
+font_sizes = [10, 12, 20, 30, 35]
+font_by_size = lambda size: ("DS-Digital", size)
 sg.theme("Dark")
-sg.set_options(font=font_size(20))
+sg.set_options(font=font_by_size(font_sizes[2]))
 layout = [
-    [sg.Text("==SIMULATION==", font=font_size(48))],
-    [sg.Text("Step Size"), sg.Text(str(step_size), key="display_sim-step-size", font=font_size(25)), sg.Button("+", key="add_sim-step-size"), sg.Button("-", key="sub_sim-step-size"), sg.InputText("1", size=(5, 1), key="step_sim-step-size")],
-    [sg.Text("Time"), sg.Text(str(total_time), key="display_sim-time", font=font_size(25)), sg.Button("+", key="add_sim-time"), sg.Button("-", key="sub_sim-time"), sg.InputText("1", size=(5, 1), key="step_sim-time")],
-    [sg.Button("Simulate", key="btn_sim-exec", font=font_size(28))],
-    [sg.Text("==MANUEVER==", font=font_size(48))],
-    [sg.Text("Index"), sg.Text(str(manuever_index), key="display_man-index", font=font_size(25)), sg.Button("+", key="add_man-index"), sg.Button("-", key="sub_man-index"), sg.InputText("1", size=(5, 1), key="step_man-index")],
-    [sg.Text("Time"), sg.Text(str(manuever_time), key="display_man-time", font=font_size(25)), sg.Button("+", key="add_man-time"), sg.Button("-", key="sub_man-time"), sg.InputText("1", size=(5, 1), key="step_man-time")],
+    [sg.Text("==SIMULATION==", font=font_by_size(font_sizes[4]))],
+    [sg.Text("Step Size"), sg.Text(str(vessel_step_size), key="display_sim-step-size", font=font_by_size(font_sizes[2])), sg.Button("+", key="add_sim-step-size"), sg.Button("-", key="sub_sim-step-size"), sg.InputText("1", size=(5, 1), key="step_sim-step-size")],
+    [sg.Text("Time"), sg.Text(str(vessel_sim_time), key="display_sim-time", font=font_by_size(font_sizes[2])), sg.Button("+", key="add_sim-time"), sg.Button("-", key="sub_sim-time"), sg.InputText("1", size=(5, 1), key="step_sim-time")],
+    [sg.Button("Simulate", key="btn_sim-exec", font=font_by_size(font_sizes[2]))],
+    [sg.Text("==BODIES==", font=font_by_size(font_sizes[4]))],
+    [sg.Button("Simulate", key="btn_body-sim-exec", font=font_by_size(font_sizes[2]))],
+    [sg.Text("==MANEUVER==", font=font_by_size(font_sizes[4]))],
+    [sg.Text("Index"), sg.Text(str(maneuver_index), key="display_man-index", font=font_by_size(font_sizes[2])), sg.Button("+", key="add_man-index"), sg.Button("-", key="sub_man-index"), sg.InputText("1", size=(5, 1), key="step_man-index")],
+    [sg.Text("Time"), sg.Text(str(maneuver_sim_time), key="display_man-time", font=font_by_size(font_sizes[2])), sg.Button("+", key="add_man-time"), sg.Button("-", key="sub_man-time"), sg.InputText("1", size=(5, 1), key="step_man-time")],
     [sg.Text("--Vel--")],
-    [sg.Text("tg"), sg.Text(str(manuever_vel.x), key="display_man-vel-tg", font=font_size(25)), sg.Button("+", key="add_man-vel-tg"), sg.Button("-", key="sub_man-vel-tg"), sg.InputText("1", size=(5, 1), key="step_man-vel-tg")],
-    [sg.Text("norm"), sg.Text(str(manuever_vel.y), key="display_man-vel-norm", font=font_size(25)), sg.Button("+", key="add_man-vel-norm"), sg.Button("-", key="sub_man-vel-norm"), sg.InputText("1", size=(5, 1), key="step_man-vel-norm")],
-    [sg.Text("rad"), sg.Text(str(manuever_vel.z), key="display_man-vel-rad", font=font_size(25)), sg.Button("+", key="add_man-vel-rad"), sg.Button("-", key="sub_man-vel-rad"), sg.InputText("1", size=(5, 1), key="step_man-vel-rad")],
-    [sg.Button("Execute Manuever", key="btn_man-exec")],
+    [sg.Text("tg"), sg.Text(str(maneuver_vel.x), key="display_man-vel-tg", font=font_by_size(font_sizes[2])), sg.Button("+", key="add_man-vel-tg"), sg.Button("-", key="sub_man-vel-tg"), sg.InputText("1", size=(5, 1), key="step_man-vel-tg")],
+    [sg.Text("norm"), sg.Text(str(maneuver_vel.y), key="display_man-vel-norm", font=font_by_size(font_sizes[2])), sg.Button("+", key="add_man-vel-norm"), sg.Button("-", key="sub_man-vel-norm"), sg.InputText("1", size=(5, 1), key="step_man-vel-norm")],
+    [sg.Text("rad"), sg.Text(str(maneuver_vel.z), key="display_man-vel-rad", font=font_by_size(font_sizes[2])), sg.Button("+", key="add_man-vel-rad"), sg.Button("-", key="sub_man-vel-rad"), sg.InputText("1", size=(5, 1), key="step_man-vel-rad")],
+    [sg.Button("Execute maneuver", key="btn_man-sim-exec")],
 ]
 window_controller = sg.Window("Controller", layout)
-'''[sg.Text("--Create Node--")],
-    [sg.Button("+", key="add_man-node"), sg.Button("-", key="sub_man-node")],
-    [sg.Text("-----Nodes-----")],
-    [sg.Column([], key="dynamic_column-node")],
-    [sg.Text("---------------")]'''
+
+calc_bodies()
 render_enviroment()
 update_screen()
 
