@@ -3,7 +3,7 @@ import pygame as pg
 from itertools import combinations
 from math import ceil
 
-from Vector import Vector2, Vector3
+from PyVecs import Vector2, Vector3
 
 """
 TODO
